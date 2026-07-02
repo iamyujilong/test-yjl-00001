@@ -65,6 +65,7 @@ def get_db():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA encoding = "UTF-8"')
         return conn
     except sqlite3.Error as e:
         logger.error(f"Database connection error: {e}")
@@ -830,5 +831,8 @@ def internal_error(error):
 
 if __name__ == '__main__':
     from database.init_db import init_database
-    init_database()
+    if not init_database():
+        print("Database initialization failed. Exiting...")
+        import sys
+        sys.exit(1)
     app.run(host='0.0.0.0', port=5000, debug=True)
