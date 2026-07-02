@@ -108,6 +108,16 @@ function renderNotes() {
                 <div class="note-meta">
                     ${note.category_id ? `<span class="note-category" style="background-color: ${categoryColor}20; color: ${categoryColor}">${note.category_name}</span>` : ''}
                     <div class="note-tags">${tagsHtml}</div>
+                    <div class="note-stats">
+                        <button class="stat-btn ${note.is_liked ? 'liked' : ''}" onclick="event.stopPropagation(); toggleNoteLike(${note.id})">
+                            <i class="fas fa-heart"></i>
+                            <span>${note.like_count || 0}</span>
+                        </button>
+                        <button class="stat-btn" onclick="event.stopPropagation(); openNoteDetail(${note.id})">
+                            <i class="fas fa-comment"></i>
+                            <span>${note.comment_count || 0}</span>
+                        </button>
+                    </div>
                     <span class="note-time">${formatTime(note.updated_at)}</span>
                 </div>
             </div>
@@ -485,6 +495,312 @@ function formatTime(timestamp) {
     if (diff < 604800000) return `${Math.floor(diff / 86400000)}天前`;
     
     return date.toLocaleDateString('zh-CN');
+}
+
+let currentDetailNoteId = null;
+let commentsSort = 'time';
+
+function toggleTagModal() {
+    const modal = document.getElementById('tagModal');
+    if (modal.classList.contains('active')) {
+        modal.classList.remove('active');
+    } else {
+        modal.classList.add('active');
+        renderTagManageList();
+    }
+}
+
+function renderTagManageList() {
+    const list = document.getElementById('tagManageList');
+    const filterTags = tags.filter(t => t.name !== '全部');
+    list.innerHTML = filterTags.map(tag => `
+        <div class="tag-manage-item">
+            <span class="tag-name">${tag.name}</span>
+            <button class="tag-action-btn delete" onclick="confirmDeleteTag(${tag.id})">
+                <i class="fas fa-trash"></i>
+            </button>
+        </div>
+    `).join('');
+}
+
+async function addTag() {
+    const name = document.getElementById('newTagName').value;
+    
+    if (!name.trim()) {
+        alert('请输入标签名称');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/tags`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim() })
+        });
+        
+        if (response.ok) {
+            document.getElementById('newTagName').value = '';
+            await fetchTags();
+            renderTagManageList();
+        } else {
+            const data = await response.json();
+            alert(data.error || '添加失败');
+        }
+    } catch (error) {
+        console.error('Error adding tag:', error);
+    }
+}
+
+function confirmDeleteTag(tagId) {
+    confirmCallback = () => deleteTag(tagId);
+    document.getElementById('confirmMessage').textContent = '确定要删除这个标签吗？相关笔记的该标签将被移除。';
+    document.getElementById('confirmModal').classList.add('active');
+}
+
+async function deleteTag(tagId) {
+    try {
+        const response = await fetch(`${API_BASE}/tags/${tagId}`, {
+            method: 'DELETE'
+        });
+        
+        if (response.ok) {
+            await fetchTags();
+            renderTagManageList();
+            if (currentTag === tagId.toString()) {
+                filterByTag('');
+            }
+        }
+    } catch (error) {
+        console.error('Error deleting tag:', error);
+    }
+}
+
+async function openNoteDetail(noteId) {
+    currentDetailNoteId = noteId;
+    const modal = document.getElementById('noteDetailModal');
+    modal.classList.add('active');
+    
+    try {
+        const [noteRes, commentsRes, likeRes] = await Promise.all([
+            fetch(`${API_BASE}/notes/${noteId}`),
+            fetch(`${API_BASE}/notes/${noteId}/comments?sort=${commentsSort}`),
+            fetch(`${API_BASE}/notes/${noteId}/like/status`)
+        ]);
+        
+        const note = await noteRes.json();
+        const commentsData = await commentsRes.json();
+        const likeStatus = await likeRes.json();
+        
+        document.getElementById('detailTitle').textContent = note.title;
+        document.getElementById('detailContent').textContent = note.content || '';
+        document.getElementById('detailTime').textContent = formatTime(note.updated_at);
+        
+        document.getElementById('detailLikeCount').textContent = likeStatus.like_count || 0;
+        document.getElementById('detailCommentCount').textContent = note.comment_count || 0;
+        
+        const likeBtn = document.getElementById('detailLikeBtn');
+        if (likeStatus.is_liked) {
+            likeBtn.classList.add('liked');
+        } else {
+            likeBtn.classList.remove('liked');
+        }
+        
+        const tagsHtml = note.tags ? note.tags.map(tag => 
+            `<span class="detail-tag">${tag.name}</span>`
+        ).join('') : '';
+        document.getElementById('detailTags').innerHTML = tagsHtml;
+        
+        document.getElementById('detailCategory').innerHTML = note.category_id 
+            ? `<span class="detail-category-item" style="background-color: ${note.category_color}20; color: ${note.category_color}">${note.category_name}</span>` 
+            : '';
+        
+        renderComments(commentsData.comments || []);
+    } catch (error) {
+        console.error('Error loading note detail:', error);
+    }
+}
+
+function closeNoteDetail() {
+    document.getElementById('noteDetailModal').classList.remove('active');
+    currentDetailNoteId = null;
+}
+
+async function fetchComments() {
+    if (!currentDetailNoteId) return;
+    
+    try {
+        const response = await fetch(`${API_BASE}/notes/${currentDetailNoteId}/comments?sort=${commentsSort}`);
+        const data = await response.json();
+        renderComments(data.comments || []);
+    } catch (error) {
+        console.error('Error fetching comments:', error);
+    }
+}
+
+function renderComments(comments) {
+    const commentList = document.getElementById('commentList');
+    
+    if (comments.length === 0) {
+        commentList.innerHTML = `
+            <div class="empty-comments">
+                <i class="fas fa-comments"></i>
+                <p>暂无评论，快来发表第一条评论吧</p>
+            </div>
+        `;
+        return;
+    }
+    
+    commentList.innerHTML = comments.map(comment => {
+        const repliesHtml = comment.replies ? comment.replies.map(reply => `
+            <div class="comment-reply">
+                <div class="reply-content">
+                    <span class="reply-location">${reply.ip_location}</span>
+                    <span class="reply-text">${escapeHtml(reply.content)}</span>
+                    <span class="reply-time">${formatTime(reply.created_at)}</span>
+                </div>
+                <button class="reply-like-btn ${reply.is_liked ? 'liked' : ''}" onclick="toggleCommentLike(${reply.id}, this)">
+                    <i class="fas fa-thumbs-up"></i>
+                    <span>${reply.like_count || 0}</span>
+                </button>
+            </div>
+        `).join('') : '';
+        
+        return `
+            <div class="comment-item">
+                <div class="comment-content">
+                    <span class="comment-location">${comment.ip_location}</span>
+                    <p>${escapeHtml(comment.content)}</p>
+                    <span class="comment-time">${formatTime(comment.created_at)}</span>
+                </div>
+                <div class="comment-actions">
+                    <button class="comment-action-btn ${comment.is_liked ? 'liked' : ''}" onclick="toggleCommentLike(${comment.id}, this)">
+                        <i class="fas fa-thumbs-up"></i>
+                        <span>${comment.like_count || 0}</span>
+                    </button>
+                    <button class="comment-action-btn reply-btn" onclick="replyToComment(${comment.id})">
+                        <i class="fas fa-reply"></i>
+                        <span>回复</span>
+                    </button>
+                </div>
+                ${repliesHtml ? `<div class="comment-replies">${repliesHtml}</div>` : ''}
+            </div>
+        `;
+    }).join('');
+}
+
+async function submitComment(parentId = null) {
+    if (!currentDetailNoteId) return;
+    
+    const content = document.getElementById('commentInput').value;
+    
+    if (!content.trim()) {
+        alert('请输入评论内容');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/notes/${currentDetailNoteId}/comments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                content: content.trim(),
+                parent_id: parentId || null
+            })
+        });
+        
+        if (response.ok) {
+            document.getElementById('commentInput').value = '';
+            await fetchComments();
+            await fetchNotes();
+        } else {
+            const data = await response.json();
+            alert(data.error || '发表失败');
+        }
+    } catch (error) {
+        console.error('Error submitting comment:', error);
+    }
+}
+
+function replyToComment(parentId) {
+    const input = document.getElementById('commentInput');
+    input.placeholder = `回复评论...`;
+    input.focus();
+    const submitBtn = document.querySelector('.comment-submit-btn');
+    submitBtn.onclick = () => submitComment(parentId);
+}
+
+function sortComments(sortBy) {
+    commentsSort = sortBy;
+    document.querySelectorAll('.sort-btn').forEach(el => {
+        el.classList.toggle('active', el.textContent === (sortBy === 'time' ? '最新' : '最热'));
+    });
+    fetchComments();
+}
+
+async function toggleNoteLike(noteId) {
+    try {
+        const response = await fetch(`${API_BASE}/notes/${noteId}/like`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            await fetchNotes();
+        }
+    } catch (error) {
+        console.error('Error toggling note like:', error);
+    }
+}
+
+async function toggleNoteLikeFromDetail() {
+    if (!currentDetailNoteId) return;
+    
+    try {
+        const response = await fetch(`${API_BASE}/notes/${currentDetailNoteId}/like`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            document.getElementById('detailLikeCount').textContent = data.like_count;
+            
+            const likeBtn = document.getElementById('detailLikeBtn');
+            if (data.liked) {
+                likeBtn.classList.add('liked');
+            } else {
+                likeBtn.classList.remove('liked');
+            }
+            
+            await fetchNotes();
+        }
+    } catch (error) {
+        console.error('Error toggling note like:', error);
+    }
+}
+
+async function toggleCommentLike(commentId, btn) {
+    try {
+        const response = await fetch(`${API_BASE}/comments/${commentId}/like`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            const countSpan = btn.querySelector('span');
+            countSpan.textContent = data.like_count;
+            
+            if (data.liked) {
+                btn.classList.add('liked');
+            } else {
+                btn.classList.remove('liked');
+            }
+        }
+    } catch (error) {
+        console.error('Error toggling comment like:', error);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', () => {

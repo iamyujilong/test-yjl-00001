@@ -32,6 +32,8 @@ def init_database():
             category_id INTEGER,
             is_favorite INTEGER DEFAULT 0,
             is_archived INTEGER DEFAULT 0,
+            like_count INTEGER DEFAULT 0,
+            comment_count INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (category_id) REFERENCES categories (id)
@@ -45,6 +47,53 @@ def init_database():
             PRIMARY KEY (note_id, tag_id),
             FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
             FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE CASCADE
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS anonymous_users (
+            token TEXT PRIMARY KEY,
+            ip_address TEXT,
+            ip_location TEXT DEFAULT '未知',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id INTEGER,
+            parent_id INTEGER,
+            token TEXT,
+            ip_location TEXT DEFAULT '未知',
+            content TEXT NOT NULL,
+            like_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_id) REFERENCES comments (id) ON DELETE CASCADE,
+            FOREIGN KEY (token) REFERENCES anonymous_users (token)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS note_likes (
+            note_id INTEGER,
+            token TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (note_id, token),
+            FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
+            FOREIGN KEY (token) REFERENCES anonymous_users (token)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS comment_likes (
+            comment_id INTEGER,
+            token TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (comment_id, token),
+            FOREIGN KEY (comment_id) REFERENCES comments (id) ON DELETE CASCADE,
+            FOREIGN KEY (token) REFERENCES anonymous_users (token)
         )
     ''')
     
@@ -64,6 +113,26 @@ def init_database():
         CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes(is_archived)
     ''')
     
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_comments_note_id ON comments(note_id)
+    ''')
+    
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_comments_parent_id ON comments(parent_id)
+    ''')
+    
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_comments_token ON comments(token)
+    ''')
+    
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_note_likes_token ON note_likes(token)
+    ''')
+    
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_comment_likes_token ON comment_likes(token)
+    ''')
+    
     cursor.execute("SELECT COUNT(*) FROM categories")
     if cursor.fetchone()[0] == 0:
         default_categories = [
@@ -74,6 +143,10 @@ def init_database():
             ('灵感', '#FFD700')
         ]
         cursor.executemany('INSERT INTO categories (name, color) VALUES (?, ?)', default_categories)
+    
+    cursor.execute("SELECT COUNT(*) FROM tags WHERE name = '全部'")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO tags (name) VALUES ('全部')")
     
     conn.commit()
     conn.close()

@@ -1,11 +1,12 @@
 import os
 import sys
 import logging
+import uuid
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, make_response
 from flask_cors import CORS
 import sqlite3
 import time
@@ -18,6 +19,47 @@ CORS(app)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def get_client_ip():
+    if request.headers.get('X-Forwarded-For'):
+        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    if request.headers.get('X-Real-IP'):
+        return request.headers.get('X-Real-IP')
+    return request.remote_addr
+
+def get_ip_location(ip):
+    if ip.startswith('127.') or ip.startswith('192.168.') or ip == 'localhost' or ip == '::1':
+        return '本地'
+    return '未知'
+
+def ensure_anonymous_user():
+    token = request.cookies.get('anonymous_token')
+    
+    if not token:
+        token = str(uuid.uuid4())
+    
+    ip_address = get_client_ip()
+    ip_location = get_ip_location(ip_address)
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO anonymous_users (token, ip_address, ip_location)
+            VALUES (?, ?, ?)
+        ''', (token, ip_address, ip_location))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Error ensuring anonymous user: {e}")
+    
+    return token
+
+@app.before_request
+def before_request_hook():
+    if request.path.startswith('/api/'):
+        token = ensure_anonymous_user()
+        setattr(request, 'anonymous_token', token)
 
 def get_db():
     try:
@@ -513,6 +555,265 @@ def delete_tag(tag_id):
         if conn:
             conn.rollback()
         logger.error(f"Unexpected error in delete_tag: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/api/notes/<int:note_id>/comments', methods=['POST'])
+def create_comment(note_id):
+    conn = None
+    try:
+        token = getattr(request, 'anonymous_token', None)
+        if not token:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        data = request.get_json()
+        if not data or 'content' not in data:
+            return jsonify({'error': 'Content is required'}), 400
+        
+        content = data['content'].strip()
+        if not content:
+            return jsonify({'error': 'Content cannot be empty'}), 400
+        
+        parent_id = data.get('parent_id')
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT id FROM notes WHERE id = ?', (note_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': 'Note not found'}), 404
+        
+        today = time.strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT COUNT(*) FROM comments 
+            WHERE token = ? AND DATE(created_at) = ? AND note_id = ?
+        ''', (token, today, note_id))
+        count = cursor.fetchone()[0]
+        if count >= 2:
+            return jsonify({'error': 'Daily comment limit exceeded (2 per day)'}), 429
+        
+        cursor.execute('SELECT ip_location FROM anonymous_users WHERE token = ?', (token,))
+        ip_location = cursor.fetchone()[0] if cursor.fetchone() else '未知'
+        
+        cursor.execute('''
+            INSERT INTO comments (note_id, parent_id, token, ip_location, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (note_id, parent_id, token, ip_location, content, time.strftime('%Y-%m-%d %H:%M:%S')))
+        
+        comment_id = cursor.lastrowid
+        
+        cursor.execute('''
+            UPDATE notes SET comment_count = comment_count + 1, updated_at = ? WHERE id = ?
+        ''', (time.strftime('%Y-%m-%d %H:%M:%S'), note_id))
+        
+        conn.commit()
+        
+        cursor.execute('SELECT * FROM comments WHERE id = ?', (comment_id,))
+        comment = dict_from_row(cursor.fetchone())
+        
+        response = make_response(jsonify({'message': 'Comment created', 'comment': comment}), 201)
+        response.set_cookie('anonymous_token', token, max_age=30*24*60*60)
+        return response
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Database error in create_comment: {e}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Unexpected error in create_comment: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/api/notes/<int:note_id>/comments', methods=['GET'])
+def get_comments(note_id):
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT id FROM notes WHERE id = ?', (note_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': 'Note not found'}), 404
+        
+        sort_by = request.args.get('sort', 'time')
+        
+        if sort_by == 'heat':
+            query = '''
+                SELECT c.* FROM comments c
+                WHERE c.note_id = ? AND c.parent_id IS NULL
+                ORDER BY c.like_count DESC, c.created_at DESC
+            '''
+        else:
+            query = '''
+                SELECT c.* FROM comments c
+                WHERE c.note_id = ? AND c.parent_id IS NULL
+                ORDER BY c.created_at DESC
+            '''
+        
+        cursor.execute(query, (note_id,))
+        comments = [dict_from_row(row) for row in cursor.fetchall()]
+        
+        token = getattr(request, 'anonymous_token', None)
+        
+        for comment in comments:
+            cursor.execute('''
+                SELECT c.* FROM comments c
+                WHERE c.parent_id = ?
+                ORDER BY c.created_at ASC
+            ''', (comment['id'],))
+            comment['replies'] = [dict_from_row(row) for row in cursor.fetchall()]
+            
+            if token:
+                cursor.execute('SELECT COUNT(*) FROM comment_likes WHERE comment_id = ? AND token = ?', (comment['id'], token))
+                comment['is_liked'] = cursor.fetchone()[0] > 0
+                
+                for reply in comment['replies']:
+                    cursor.execute('SELECT COUNT(*) FROM comment_likes WHERE comment_id = ? AND token = ?', (reply['id'], token))
+                    reply['is_liked'] = cursor.fetchone()[0] > 0
+        
+        return jsonify({'comments': comments})
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_comments: {e}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error in get_comments: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/api/notes/<int:note_id>/like', methods=['POST'])
+def like_note(note_id):
+    conn = None
+    try:
+        token = getattr(request, 'anonymous_token', None)
+        if not token:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT id FROM notes WHERE id = ?', (note_id,))
+        if not cursor.fetchone():
+            return jsonify({'error': 'Note not found'}), 404
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO note_likes (note_id, token, created_at)
+            VALUES (?, ?, ?)
+        ''', (note_id, token, time.strftime('%Y-%m-%d %H:%M:%S')))
+        
+        if cursor.rowcount > 0:
+            cursor.execute('UPDATE notes SET like_count = like_count + 1 WHERE id = ?', (note_id,))
+            liked = True
+        else:
+            cursor.execute('DELETE FROM note_likes WHERE note_id = ? AND token = ?', (note_id, token))
+            cursor.execute('UPDATE notes SET like_count = like_count - 1 WHERE id = ?', (note_id,))
+            liked = False
+        
+        conn.commit()
+        
+        cursor.execute('SELECT like_count FROM notes WHERE id = ?', (note_id,))
+        like_count = cursor.fetchone()[0]
+        
+        response = make_response(jsonify({'liked': liked, 'like_count': like_count}), 200)
+        response.set_cookie('anonymous_token', token, max_age=30*24*60*60)
+        return response
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Database error in like_note: {e}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Unexpected error in like_note: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/api/notes/<int:note_id>/like/status', methods=['GET'])
+def get_note_like_status(note_id):
+    conn = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT id, like_count FROM notes WHERE id = ?', (note_id,))
+        note = cursor.fetchone()
+        if not note:
+            return jsonify({'error': 'Note not found'}), 404
+        
+        token = getattr(request, 'anonymous_token', None)
+        is_liked = False
+        
+        if token:
+            cursor.execute('SELECT COUNT(*) FROM note_likes WHERE note_id = ? AND token = ?', (note_id, token))
+            is_liked = cursor.fetchone()[0] > 0
+        
+        return jsonify({'is_liked': is_liked, 'like_count': note['like_count']})
+    except sqlite3.Error as e:
+        logger.error(f"Database error in get_note_like_status: {e}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error in get_note_like_status: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route('/api/comments/<int:comment_id>/like', methods=['POST'])
+def like_comment(comment_id):
+    conn = None
+    try:
+        token = getattr(request, 'anonymous_token', None)
+        if not token:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT id, note_id FROM comments WHERE id = ?', (comment_id,))
+        comment = cursor.fetchone()
+        if not comment:
+            return jsonify({'error': 'Comment not found'}), 404
+        
+        cursor.execute('''
+            INSERT OR IGNORE INTO comment_likes (comment_id, token, created_at)
+            VALUES (?, ?, ?)
+        ''', (comment_id, token, time.strftime('%Y-%m-%d %H:%M:%S')))
+        
+        if cursor.rowcount > 0:
+            cursor.execute('UPDATE comments SET like_count = like_count + 1 WHERE id = ?', (comment_id,))
+            liked = True
+        else:
+            cursor.execute('DELETE FROM comment_likes WHERE comment_id = ? AND token = ?', (comment_id, token))
+            cursor.execute('UPDATE comments SET like_count = like_count - 1 WHERE id = ?', (comment_id,))
+            liked = False
+        
+        conn.commit()
+        
+        cursor.execute('SELECT like_count FROM comments WHERE id = ?', (comment_id,))
+        like_count = cursor.fetchone()[0]
+        
+        response = make_response(jsonify({'liked': liked, 'like_count': like_count}), 200)
+        response.set_cookie('anonymous_token', token, max_age=30*24*60*60)
+        return response
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Database error in like_comment: {e}")
+        return jsonify({'error': 'Database error'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error(f"Unexpected error in like_comment: {e}")
         return jsonify({'error': 'Internal server error'}), 500
     finally:
         if conn:

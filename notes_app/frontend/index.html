@@ -15,6 +15,9 @@
                 <button onclick="toggleCategoryModal()" class="btn btn-secondary">
                     <i class="fas fa-folder-plus"></i> 分类管理
                 </button>
+                <button onclick="toggleTagModal()" class="btn btn-secondary">
+                    <i class="fas fa-tags"></i> 标签管理
+                </button>
                 <button onclick="openNoteForm()" class="btn btn-primary">
                     <i class="fas fa-plus"></i> 新建笔记
                 </button>
@@ -151,6 +154,77 @@
                 <div class="form-actions">
                     <button class="btn btn-secondary" onclick="closeConfirmModal()">取消</button>
                     <button class="btn btn-danger" onclick="executeConfirm()">确定</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="tagModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>标签管理</h3>
+                    <button class="close-btn" onclick="toggleTagModal()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="tag-modal-content">
+                    <div class="form-group">
+                        <label for="newTagName">标签名称</label>
+                        <input type="text" id="newTagName" placeholder="输入标签名称">
+                    </div>
+                    <button class="btn btn-primary" onclick="addTag()">添加标签</button>
+                    
+                    <div id="tagManageList" class="tag-manage-list">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="noteDetailModal" class="modal">
+            <div class="modal-content note-detail-modal">
+                <div class="modal-header">
+                    <h3 id="detailTitle">笔记详情</h3>
+                    <button class="close-btn" onclick="closeNoteDetail()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="note-detail-content">
+                    <div class="detail-header">
+                        <div class="detail-tags" id="detailTags"></div>
+                        <div class="detail-category" id="detailCategory"></div>
+                    </div>
+                    <p class="detail-content" id="detailContent"></p>
+                    <div class="detail-meta">
+                        <span class="detail-time" id="detailTime"></span>
+                        <div class="detail-actions">
+                            <button class="detail-action-btn" id="detailLikeBtn" onclick="toggleNoteLikeFromDetail()">
+                                <i class="fas fa-heart"></i>
+                                <span id="detailLikeCount">0</span>
+                            </button>
+                            <button class="detail-action-btn" id="detailCommentBtn">
+                                <i class="fas fa-comment"></i>
+                                <span id="detailCommentCount">0</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="comments-section">
+                    <div class="comments-header">
+                        <h4>评论</h4>
+                        <div class="sort-toggle">
+                            <button class="sort-btn active" onclick="sortComments('time')">最新</button>
+                            <button class="sort-btn" onclick="sortComments('heat')">最热</button>
+                        </div>
+                    </div>
+                    <div class="comment-input-container">
+                        <textarea id="commentInput" rows="3" placeholder="发表评论（每日限2条）"></textarea>
+                        <button class="btn btn-primary comment-submit-btn" onclick="submitComment()">发表</button>
+                    </div>
+                    <div id="commentList" class="comment-list">
+                        <div class="empty-comments">
+                            <i class="fas fa-comments"></i>
+                            <p>暂无评论，快来发表第一条评论吧</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
