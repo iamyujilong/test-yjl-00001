@@ -95,36 +95,38 @@ def get_notes():
             SELECT n.*, c.name as category_name, c.color as category_color
             FROM notes n
             LEFT JOIN categories c ON n.category_id = c.id
-            WHERE 1=1
         '''
+        join_clauses = []
+        where_clauses = []
         params = []
         
+        if tag_id:
+            join_clauses.append('JOIN note_tags nt ON n.id = nt.note_id')
+            where_clauses.append('nt.tag_id = ?')
+            params.append(tag_id)
+        
         if search:
-            query += ' AND (n.title LIKE ? OR n.content LIKE ?)'
+            where_clauses.append('(n.title LIKE ? OR n.content LIKE ?)')
             params.append(f'%{search}%')
             params.append(f'%{search}%')
         
         if category_id:
-            query += ' AND n.category_id = ?'
+            where_clauses.append('n.category_id = ?')
             params.append(category_id)
         
         if is_favorite is not None:
-            query += ' AND n.is_favorite = ?'
+            where_clauses.append('n.is_favorite = ?')
             params.append(is_favorite)
         
         if is_archived is not None:
-            query += ' AND n.is_archived = ?'
+            where_clauses.append('n.is_archived = ?')
             params.append(is_archived)
         
-        if tag_id:
-            query = '''
-                SELECT DISTINCT n.*, c.name as category_name, c.color as category_color
-                FROM notes n
-                LEFT JOIN categories c ON n.category_id = c.id
-                JOIN note_tags nt ON n.id = nt.note_id
-                WHERE nt.tag_id = ?
-            ''' + query[query.find('WHERE')+6:]
-            params.insert(0, tag_id)
+        if join_clauses:
+            query += ' '.join(join_clauses)
+        
+        if where_clauses:
+            query += ' WHERE ' + ' AND '.join(where_clauses)
         
         query += ' ORDER BY n.updated_at DESC'
         
@@ -596,7 +598,8 @@ def create_comment(note_id):
             return jsonify({'error': 'Daily comment limit exceeded (2 per day)'}), 429
         
         cursor.execute('SELECT ip_location FROM anonymous_users WHERE token = ?', (token,))
-        ip_location = cursor.fetchone()[0] if cursor.fetchone() else '未知'
+        result = cursor.fetchone()
+        ip_location = result[0] if result else '未知'
         
         cursor.execute('''
             INSERT INTO comments (note_id, parent_id, token, ip_location, content, created_at)

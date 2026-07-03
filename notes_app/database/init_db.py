@@ -147,10 +147,6 @@ def init_database():
             ]
             cursor.executemany('INSERT INTO categories (name, color) VALUES (?, ?)', default_categories)
         
-        cursor.execute("SELECT COUNT(*) FROM tags WHERE name = ?", ('全部',))
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("INSERT INTO tags (name) VALUES (?)", ('全部',))
-        
         conn.commit()
         conn.close()
         print("Database initialized successfully")
